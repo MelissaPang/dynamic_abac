@@ -1,0 +1,35 @@
+# Databricks Asset Bundle — deploy a job that seeds Delta tables in Unity Catalog.
+# Docs: https://docs.databricks.com/dev-tools/bundles/index.html
+
+bundle:
+  name: dynamic_abac
+  uuid: 8f4c2b1a-0e3d-4c7a-9b2e-6d1a5f8e9c0b
+
+include:
+  - resources/*.yml
+
+artifacts:
+  demo_wheel:
+    type: whl
+    build: |
+      set -e
+      python3 -m venv .bundle-venv
+      .bundle-venv/bin/pip install -q build hatchling
+      .bundle-venv/bin/python -m build --wheel .
+
+variables:
+  catalog:
+    description: Unity Catalog name where schema and Delta tables are created (catalog must already exist).
+    default: main
+  schema:
+    description: Schema within the catalog for patient demo tables.
+    default: demo_dynamic_abac
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+  prod:
+    mode: production

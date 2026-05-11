@@ -1,0 +1,11 @@
+patient_id,first_name,last_name,date_of_birth,sex_at_birth,race_ethnicity,zip_code,state,phone,insurance_member_id
+P0001,Jordan,Nguyen,1964-12-27,F,Declined to specify,46048,CA,555-350-4657,SYN-P0001-246316
+P0002,Riley,Patel,1964-03-12,X,Declined to specify,81482,TX,555-189-7912,SYN-P0002-133326
+P0003,Morgan,Garcia,1957-09-03,F,Hispanic or Latino,40495,NY,555-617-1434,SYN-P0003-688508
+P0004,Casey,Okafor,1972-11-02,X,Declined to specify,81426,FL,555-529-4611,SYN-P0004-571029
+P0005,Avery,Silva,1979-12-16,F,Hispanic or Latino,65392,IL,555-448-5552,SYN-P0005-263032
+P0006,Quinn,Kim,1974-04-26,M,Asian,22156,WA,555-489-2584,SYN-P0006-476417
+P0007,Skyler,Martinez,1985-11-09,X,White,15695,OH,555-847-8527,SYN-P0007-662275
+P0008,Reese,Chen,1966-03-14,M,Asian,82357,GA,555-400-6925,SYN-P0008-705397
+P0009,Dakota,Brown,1972-04-01,X,Asian,16006,NC,555-777-4733,SYN-P0009-910620
+P0010,Jamie,Singh,1980-12-17,F,Hispanic or Latino,23238,MI,555-489-5554,SYN-P0010-575435
