@@ -2,7 +2,7 @@
 """
 End-to-end setup: deploy the Databricks Asset Bundle, then run the ``seed_patient_tables`` job.
 
-That job (1) seeds Delta tables and crosswalk, applies ABAC row filters on ``*_with_abac`` tables,
+That job (1) seeds Delta tables and crosswalk, creates an ABAC row-filter policy (UDF + governed tags) on ``*_with_abac`` tables,
 and (2) runs ``notebooks/verify_abac_policies.ipynb`` to validate visibility.
 
 Requires the ``databricks`` CLI on PATH and workspace auth (see README).
