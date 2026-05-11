@@ -7,6 +7,10 @@ Synthetic **patient demographics** (10 rows) and **patient claims** (100 rows) a
 
 The same job then creates Delta copies in that schema (same data and columns): **`patient_demographics_with_abac`** and **`patient_claims_with_abac`**.
 
+Those two tables get a **Unity Catalog row filter** via scalar function **`check_patient_access`** (argument is each row’s **`patient_id`**): if `CURRENT_USER()` matches **`staff_patient_crosswalk.staff_email`** for a row where **`is_excluded = 1`** for that patient, that patient’s demographics and claims rows are hidden (for example, staff on **S003** with **P0007** excluded will not see **P0007**). Anyone not matching such a crosswalk row still sees all patients. Query users need **SELECT** on `staff_patient_crosswalk` and **EXECUTE** on `check_patient_access` (see comments in `sql/abac_row_filter.sql` for example grants).
+
+The **`seed_patient_tables`** job runs end to end: **(1)** wheel task seeds base tables, crosswalk, `_with_abac` copies, and attaches the row filter; **(2)** notebook task **`verify_abac_policies.ipynb`** runs with the same **`catalog`** / **`schema`** widgets so you can see counts and `EXCEPT` proofs in the job run output.
+
 The schema defaults to **`demo_dynamic_abac`**. The **catalog** is a bundle variable you set for your workspace.
 
 ## Prerequisites
@@ -30,7 +34,7 @@ databricks bundle deploy -t dev
 databricks bundle run seed_patient_tables -t dev
 ```
 
-After a successful run, query e.g. `` SELECT * FROM my_catalog.demo_dynamic_abac.patient_claims LIMIT 5 `` (replace with your catalog).
+After a successful run, open the **`verify_abac_notebook`** task run in the job UI to inspect **`verify_abac_policies`** outputs (counts and `EXCEPT` lists), or query tables directly, e.g. `` SELECT * FROM my_catalog.demo_dynamic_abac.patient_claims LIMIT 5 ``.
 
 ## Layout
 
@@ -39,7 +43,9 @@ After a successful run, query e.g. `` SELECT * FROM my_catalog.demo_dynamic_abac
 | `databricks.yml` | Bundle metadata, variables, wheel artifact build |
 | `resources/seed_patient_tables.job.yml` | Serverless job running the `seed` console script |
 | `src/dynamic_abac_demo/` | Wheel package: `seed_tables.py` + `bootstrap_data/*.csv` |
+| `notebooks/verify_abac_policies.ipynb` | Run in a workspace to compare base vs `*_with_abac` visibility for `CURRENT_USER()` |
 | `sql/patient_tables.sql` | Reference DDL (logical shape); actual tables are Delta from the job |
+| `sql/abac_row_filter.sql` | Example UC row-filter DDL (catalog/schema placeholders); seed job applies the same logic with your variables |
 
 ## Local wheel build (optional)
 

@@ -39,6 +39,43 @@ def _git_user_email_near(source_file: str) -> str | None:
     return None
 
 
+def _apply_abac_row_filters(spark: SparkSession, catalog: str, schema: str) -> None:
+    """UC row filter: hide patient rows for current staff when crosswalk marks is_excluded = 1."""
+    fq = lambda name: f"`{catalog}`.`{schema}`.`{name}`"
+
+    spark.sql(
+        f"""
+        CREATE OR REPLACE FUNCTION {fq("check_patient_access")}(pid STRING)
+        RETURNS BOOLEAN
+        RETURN ((
+          SELECT CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM {fq("staff_patient_crosswalk")} c
+              WHERE c.staff_email = CURRENT_USER()
+                AND c.patient_id = pid
+                AND CAST(c.is_excluded AS INT) = 1
+            ) THEN FALSE
+            ELSE TRUE
+          END
+        ))
+        """
+    )
+
+    spark.sql(
+        f"ALTER TABLE {fq('patient_demographics_with_abac')} "
+        f"SET ROW FILTER {fq('check_patient_access')} ON (patient_id)"
+    )
+    spark.sql(
+        f"ALTER TABLE {fq('patient_claims_with_abac')} "
+        f"SET ROW FILTER {fq('check_patient_access')} ON (patient_id)"
+    )
+    print(
+        f"Applied UC row filter {catalog}.{schema}.check_patient_access "
+        f"to patient_demographics_with_abac and patient_claims_with_abac"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Seed patient demographics and claims Delta tables.")
     parser.add_argument(
@@ -124,6 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     full_claims_abac = f"`{catalog}`.`{schema}`.`patient_claims_with_abac`"
     spark.sql(f"REFRESH TABLE {full_demo_abac}")
     spark.sql(f"REFRESH TABLE {full_claims_abac}")
+
+    _apply_abac_row_filters(spark, catalog, schema)
 
     n_demo = spark.table(f"{catalog}.{schema}.patient_demographics").count()
     n_claims = spark.table(f"{catalog}.{schema}.patient_claims").count()
