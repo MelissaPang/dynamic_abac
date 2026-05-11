@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+
+_TAG_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _bootstrap_dir() -> Path:
@@ -49,6 +52,51 @@ def _git_user_email_near(source_file: str) -> str | None:
     return None
 
 
+def _assert_tag_identifier(name: str, what: str) -> str:
+    s = name.strip()
+    if not s or not _TAG_IDENT.match(s):
+        raise ValueError(f"{what} must be a non-empty Unity Catalog identifier (letters, digits, underscore): {name!r}")
+    return s
+
+
+def _sql_string_literal(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _tag_value_sql_for_set_tag(tag_value: str) -> str:
+    """UC ``SET TAG`` value: booleans as keywords; governed enums as bare identifiers (``ssn``); else a string literal."""
+    s = tag_value.strip()
+    low = s.lower()
+    if low in ("true", "false"):
+        return low
+    if _TAG_IDENT.match(s):
+        return s
+    return _sql_string_literal(s)
+
+
+def _tag_value_sql_for_policy(tag_value: str) -> str:
+    """Value argument for ``has_tag_value`` in row policies (string form; bare names are not column refs)."""
+    return _sql_string_literal(tag_value.strip())
+
+
+def _set_tag_on_entity_clause(tag_key: str, tag_value: str) -> str:
+    """Fragment for ``SET TAG ON …``: ``tag_key`` (key-only) or ``tag_key = value`` (UC requires ``=``)."""
+    s = tag_value.strip()
+    if not s:
+        return tag_key
+    return f"{tag_key} = {_tag_value_sql_for_set_tag(s)}"
+
+
+def _match_columns_for_column_tag(column_tag_key: str, column_tag_value: str) -> str:
+    """Policy binds UDF to ``patient_id`` via column tag: ``has_tag`` (key-only) or ``has_tag_value``."""
+    k = _sql_string_literal(column_tag_key)
+    s = column_tag_value.strip()
+    if not s:
+        return f"has_tag({k}) AS pid"
+    v = _tag_value_sql_for_policy(s)
+    return f"has_tag_value({k}, {v}) AS pid"
+
+
 def _set_tag_sql_allow_duplicate(spark: SparkSession, sql: str) -> None:
     """Run SET TAG …; UC raises if the same tag key is already assigned (idempotent re-seed)."""
     try:
@@ -59,16 +107,42 @@ def _set_tag_sql_allow_duplicate(spark: SparkSession, sql: str) -> None:
         raise
 
 
-def _apply_abac_row_filters(spark: SparkSession, catalog: str, schema: str) -> None:
-    """Hide patient rows when crosswalk marks is_excluded = 1 for the current user.
+def _drop_policy_if_exists(spark: SparkSession, policy_name: str, on_clause: str) -> None:
+    """``on_clause`` is e.g. ``ON SCHEMA `cat`.`sch` `` or ``ON TABLE `cat`.`sch`.`t` ``."""
+    try:
+        spark.sql(f"DROP POLICY {policy_name} {on_clause}")
+    except Exception:
+        pass
 
-    Tries Unity Catalog ABAC ``CREATE POLICY`` (row filter UDF + tag conditions) first.
-    If the metastore does not expose the tag keys for policy conditions (common on ad-hoc
-    tags), falls back to ``ALTER TABLE ... SET ROW FILTER``. See sql/abac_row_filter.sql.
+
+def _apply_abac_row_filters(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    *,
+    table_tag_key: str,
+    table_tag_value: str,
+    column_tag_key: str,
+    column_tag_value: str,
+) -> None:
+    """Attach per-table ABAC row-filter policies (no ``ALTER TABLE … SET ROW FILTER``).
+
+    ``table_tag_key`` + optional ``table_tag_value`` (default ``true``) on each ``*_with_abac``
+    table; ``column_tag_key`` + optional ``column_tag_value`` on ``patient_id`` (empty =
+    key-only). Policy ``MATCH COLUMNS`` uses ``has_tag`` or ``has_tag_value`` on the column tag
+    so the row-filter UDF receives ``patient_id``.
+
+    Principals: ``All account users`` then ``account users``. See ``sql/abac_row_filter.sql``.
     """
+    tkey = _assert_tag_identifier(table_tag_key, "abac_tag_key (table)")
+    ckey = _assert_tag_identifier(column_tag_key, "abac_tag_key2 (column)")
+    table_clause = _set_tag_on_entity_clause(tkey, table_tag_value)
+    column_clause = _set_tag_on_entity_clause(ckey, column_tag_value)
+
     fq = lambda name: f"`{catalog}`.`{schema}`.`{name}`"
     fq_schema = f"`{catalog}`.`{schema}`"
     fq_fn = f"`{catalog}`.`{schema}`.`check_patient_access`"
+    match_sql = _match_columns_for_column_tag(ckey, column_tag_value)
 
     spark.sql(
         f"""
@@ -89,46 +163,62 @@ def _apply_abac_row_filters(spark: SparkSession, catalog: str, schema: str) -> N
         """
     )
 
-    abac_policy_sql = f"""
-        CREATE OR REPLACE POLICY patient_crosswalk_abac
-        ON SCHEMA {fq_schema}
-        COMMENT 'Hide patient rows when staff crosswalk marks is_excluded = 1 for current user and patient_id'
-        ROW FILTER {fq_fn}
-        TO `account users`
-        FOR TABLES
-        WHEN has_tag_value('dynamic_abac_table', 'true')
-        MATCH COLUMNS has_tag_value('dynamic_abac_table', 'true') AS pid
-        USING COLUMNS (pid)
-        """
+    _drop_policy_if_exists(spark, "patient_crosswalk_abac", f"ON SCHEMA {fq_schema}")
 
-    try:
-        for tbl in ("patient_demographics_with_abac", "patient_claims_with_abac"):
-            _set_tag_sql_allow_duplicate(
-                spark, f"SET TAG ON TABLE {fq(tbl)} dynamic_abac_table = true"
-            )
-            _set_tag_sql_allow_duplicate(
-                spark,
-                f"SET TAG ON COLUMN {fq(tbl)}.patient_id dynamic_abac_table = true",
-            )
-        spark.sql(abac_policy_sql)
-    except Exception as e:
-        msg = str(e)
-        if "UC_INVALID_POLICY_CONDITION" not in msg and "Unknown tag policy key" not in msg:
-            raise
-        for tbl in ("patient_demographics_with_abac", "patient_claims_with_abac"):
-            spark.sql(
-                f"ALTER TABLE {fq(tbl)} SET ROW FILTER {fq_fn} ON (patient_id)"
-            )
-        print(
-            f"ABAC policy conditions not available for tag keys in this metastore; "
-            f"applied inline row filter {catalog}.{schema}.check_patient_access "
-            f"on patient_demographics_with_abac and patient_claims_with_abac."
+    abac_tables = ("patient_demographics_with_abac", "patient_claims_with_abac")
+    principal_candidates = ("`All account users`", "`account users`")
+
+    for tbl in abac_tables:
+        try:
+            spark.sql(f"ALTER TABLE {fq(tbl)} DROP ROW FILTER")
+        except Exception:
+            pass
+        _drop_policy_if_exists(spark, "dynamic_abac_row", f"ON TABLE {fq(tbl)}")
+
+        _set_tag_sql_allow_duplicate(spark, f"SET TAG ON TABLE {fq(tbl)} {table_clause}")
+        _set_tag_sql_allow_duplicate(
+            spark, f"SET TAG ON COLUMN {fq(tbl)}.patient_id {column_clause}"
         )
-    else:
-        print(
-            f"Created ABAC row filter policy patient_crosswalk_abac on schema {catalog}.{schema} "
-            f"using UDF {catalog}.{schema}.check_patient_access"
-        )
+
+    principal_sql: str | None = None
+
+    for tbl in abac_tables:
+        to_try = principal_candidates if principal_sql is None else (principal_sql,)
+        last_err: BaseException | None = None
+        for p in to_try:
+            try:
+                spark.sql(
+                    f"""
+                    CREATE OR REPLACE POLICY dynamic_abac_row
+                    ON TABLE {fq(tbl)}
+                    COMMENT 'ABAC row filter: check_patient_access(patient_id) for crosswalk-driven visibility'
+                    ROW FILTER {fq_fn}
+                    TO {p}
+                    FOR TABLES
+                    MATCH COLUMNS {match_sql}
+                    USING COLUMNS (pid)
+                    """
+                )
+                principal_sql = p
+                break
+            except Exception as e:
+                last_err = e
+                if "PRINCIPAL_DOES_NOT_EXIST" in str(e):
+                    continue
+                raise
+        else:
+            if last_err is not None:
+                raise last_err
+            raise RuntimeError("CREATE POLICY failed with no captured error")
+
+    used = principal_sql.strip("`") if principal_sql else "unknown"
+    tdesc = f"`{tkey}`" if not table_tag_value.strip() else f"`{tkey}`={_tag_value_sql_for_set_tag(table_tag_value)}"
+    cdesc = f"`{ckey}`" if not column_tag_value.strip() else f"`{ckey}`={_tag_value_sql_for_set_tag(column_tag_value)}"
+    print(
+        f"Attached ABAC row-filter policy dynamic_abac_row on each *_with_abac table in "
+        f"{catalog}.{schema} (table tag {tdesc}, column tag {cdesc}; TO `{used}`; "
+        f"UDF {catalog}.{schema}.check_patient_access)"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -142,6 +232,26 @@ def main(argv: list[str] | None = None) -> int:
         "--schema",
         default="demo_dynamic_abac",
         help="Schema name within the catalog (default: demo_dynamic_abac).",
+    )
+    parser.add_argument(
+        "--abac-tag-key",
+        default="abac",
+        help="Governed tag key on *_with_abac **tables** (same default as bundle ``abac_tag_key``).",
+    )
+    parser.add_argument(
+        "--abac-tag-value",
+        default="true",
+        help="Tag value for ``--abac-tag-key`` on tables (SQL string literal). Use empty string for key-only ``SET TAG ON TABLE``.",
+    )
+    parser.add_argument(
+        "--abac-tag-key2",
+        default="abac_pii_types",
+        help="Governed tag key on **patient_id** (same default as bundle ``abac_tag_key2``).",
+    )
+    parser.add_argument(
+        "--abac-tag-key2-value",
+        default="ssn",
+        help="Tag value for ``--abac-tag-key2`` on ``patient_id`` (governed enum). Empty = key-only + ``has_tag`` in policy if UC allows. Default ``ssn`` for typical ``abac_pii_types``.",
     )
     args = parser.parse_args(argv)
 
@@ -192,7 +302,15 @@ def main(argv: list[str] | None = None) -> int:
         f"AS SELECT * FROM `{catalog}`.`{schema}`.`patient_claims`"
     )
 
-    _apply_abac_row_filters(spark, catalog, schema)
+    _apply_abac_row_filters(
+        spark,
+        catalog,
+        schema,
+        table_tag_key=args.abac_tag_key,
+        table_tag_value=args.abac_tag_value,
+        column_tag_key=args.abac_tag_key2,
+        column_tag_value=args.abac_tag_key2_value,
+    )
 
     n_demo = spark.table(f"{catalog}.{schema}.patient_demographics").count()
     n_claims = spark.table(f"{catalog}.{schema}.patient_claims").count()
