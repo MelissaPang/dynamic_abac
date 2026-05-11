@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,15 @@ from pyspark.sql import functions as F
 
 def _bootstrap_dir() -> Path:
     return Path(__file__).resolve().parent / "bootstrap_data"
+
+
+def _read_fixture_csv(spark: SparkSession, path: Path):
+    """Load a small CSV from the wheel using the driver; works with Spark Connect (no cluster-local paths)."""
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f"No rows in fixture CSV: {path}")
+    return spark.createDataFrame(rows)
 
 
 def _git_user_email_near(source_file: str) -> str | None:
@@ -107,21 +117,9 @@ def main(argv: list[str] | None = None) -> int:
     spark = SparkSession.builder.getOrCreate()
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog}`.`{schema}`")
 
-    demographics = (
-        spark.read.option("header", True)
-        .option("inferSchema", True)
-        .csv(str(demo_csv))
-    )
-    claims = (
-        spark.read.option("header", True)
-        .option("inferSchema", True)
-        .csv(str(claims_csv))
-    )
-    crosswalk = (
-        spark.read.option("header", True)
-        .option("inferSchema", True)
-        .csv(str(crosswalk_csv))
-    )
+    demographics = _read_fixture_csv(spark, demo_csv)
+    claims = _read_fixture_csv(spark, claims_csv)
+    crosswalk = _read_fixture_csv(spark, crosswalk_csv)
     repo_git_email = _git_user_email_near(__file__)
     spark_principal = spark.sql("SELECT current_user() AS u").collect()[0]["u"]
     s003_email = repo_git_email or spark_principal
@@ -129,9 +127,6 @@ def main(argv: list[str] | None = None) -> int:
         "staff_email",
         F.when(F.upper(F.trim(F.col("staff_id"))) == "S003", F.lit(s003_email)).otherwise(F.col("staff_email")),
     )
-
-    full_demo = f"`{catalog}`.`{schema}`.`patient_demographics`"
-    full_claims = f"`{catalog}`.`{schema}`.`patient_claims`"
 
     demographics.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
         f"{catalog}.{schema}.patient_demographics"
@@ -143,11 +138,6 @@ def main(argv: list[str] | None = None) -> int:
         f"{catalog}.{schema}.staff_patient_crosswalk"
     )
 
-    full_crosswalk = f"`{catalog}`.`{schema}`.`staff_patient_crosswalk`"
-    spark.sql(f"REFRESH TABLE {full_demo}")
-    spark.sql(f"REFRESH TABLE {full_claims}")
-    spark.sql(f"REFRESH TABLE {full_crosswalk}")
-
     spark.sql(
         f"CREATE OR REPLACE TABLE `{catalog}`.`{schema}`.`patient_demographics_with_abac` "
         f"AS SELECT * FROM `{catalog}`.`{schema}`.`patient_demographics`"
@@ -156,11 +146,6 @@ def main(argv: list[str] | None = None) -> int:
         f"CREATE OR REPLACE TABLE `{catalog}`.`{schema}`.`patient_claims_with_abac` "
         f"AS SELECT * FROM `{catalog}`.`{schema}`.`patient_claims`"
     )
-
-    full_demo_abac = f"`{catalog}`.`{schema}`.`patient_demographics_with_abac`"
-    full_claims_abac = f"`{catalog}`.`{schema}`.`patient_claims_with_abac`"
-    spark.sql(f"REFRESH TABLE {full_demo_abac}")
-    spark.sql(f"REFRESH TABLE {full_claims_abac}")
 
     _apply_abac_row_filters(spark, catalog, schema)
 
