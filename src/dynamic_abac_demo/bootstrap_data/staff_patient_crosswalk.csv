@@ -1,0 +1,4 @@
+staff_id,patient_id,is_excluded,staff_email
+S001,P0001,0,harper.vale.synth@example.test
+S002,P0003,1,morgan.ellis.synth@example.test
+S003,P0007,1,
