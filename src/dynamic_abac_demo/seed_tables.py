@@ -3,14 +3,40 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
 
 
 def _bootstrap_dir() -> Path:
     return Path(__file__).resolve().parent / "bootstrap_data"
+
+
+def _git_user_email_near(source_file: str) -> str | None:
+    """Return `git config user.email` from the nearest ancestor directory that contains `.git`."""
+    p = Path(source_file).resolve().parent
+    for _ in range(12):
+        if (p / ".git").exists():
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(p), "config", "user.email"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                if proc.returncode == 0 and (email := proc.stdout.strip()):
+                    return email
+            except (OSError, subprocess.SubprocessError):
+                return None
+            return None
+        if p.parent == p:
+            break
+        p = p.parent
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     data_dir = _bootstrap_dir()
     demo_csv = data_dir / "patient_demographics.csv"
     claims_csv = data_dir / "patient_claims.csv"
-    if not demo_csv.is_file() or not claims_csv.is_file():
+    crosswalk_csv = data_dir / "staff_patient_crosswalk.csv"
+    if not demo_csv.is_file() or not claims_csv.is_file() or not crosswalk_csv.is_file():
         print(f"Missing CSV fixtures under {data_dir}", file=sys.stderr)
         return 1
 
@@ -53,6 +80,18 @@ def main(argv: list[str] | None = None) -> int:
         .option("inferSchema", True)
         .csv(str(claims_csv))
     )
+    crosswalk = (
+        spark.read.option("header", True)
+        .option("inferSchema", True)
+        .csv(str(crosswalk_csv))
+    )
+    repo_git_email = _git_user_email_near(__file__)
+    spark_principal = spark.sql("SELECT current_user() AS u").collect()[0]["u"]
+    s003_email = repo_git_email or spark_principal
+    crosswalk = crosswalk.withColumn(
+        "staff_email",
+        F.when(F.upper(F.trim(F.col("staff_id"))) == "S003", F.lit(s003_email)).otherwise(F.col("staff_email")),
+    )
 
     full_demo = f"`{catalog}`.`{schema}`.`patient_demographics`"
     full_claims = f"`{catalog}`.`{schema}`.`patient_claims`"
@@ -63,9 +102,14 @@ def main(argv: list[str] | None = None) -> int:
     claims.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
         f"{catalog}.{schema}.patient_claims"
     )
+    crosswalk.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+        f"{catalog}.{schema}.staff_patient_crosswalk"
+    )
 
+    full_crosswalk = f"`{catalog}`.`{schema}`.`staff_patient_crosswalk`"
     spark.sql(f"REFRESH TABLE {full_demo}")
     spark.sql(f"REFRESH TABLE {full_claims}")
+    spark.sql(f"REFRESH TABLE {full_crosswalk}")
 
     spark.sql(
         f"CREATE OR REPLACE TABLE `{catalog}`.`{schema}`.`patient_demographics_with_abac` "
@@ -85,9 +129,11 @@ def main(argv: list[str] | None = None) -> int:
     n_claims = spark.table(f"{catalog}.{schema}.patient_claims").count()
     n_demo_abac = spark.table(f"{catalog}.{schema}.patient_demographics_with_abac").count()
     n_claims_abac = spark.table(f"{catalog}.{schema}.patient_claims_with_abac").count()
+    n_crosswalk = spark.table(f"{catalog}.{schema}.staff_patient_crosswalk").count()
     print(
         f"Seeded {catalog}.{schema}: "
         f"patient_demographics={n_demo}, patient_claims={n_claims}, "
+        f"staff_patient_crosswalk={n_crosswalk}, "
         f"patient_demographics_with_abac={n_demo_abac}, patient_claims_with_abac={n_claims_abac}"
     )
     return 0
