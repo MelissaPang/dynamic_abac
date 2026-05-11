@@ -34,6 +34,12 @@ databricks bundle deploy -t dev
 databricks bundle run seed_patient_tables -t dev
 ```
 
+Or run both from Python (requires `databricks` on your PATH):
+
+```bash
+python run_e2e_pipeline.py --catalog YOUR_CATALOG --profile YOUR_CLI_PROFILE
+```
+
 After a successful run, open the **`verify_abac_notebook`** task run in the job UI to inspect **`verify_abac_policies`** outputs (counts and `EXCEPT` lists), or query tables directly, e.g. `` SELECT * FROM my_catalog.demo_dynamic_abac.patient_claims LIMIT 5 ``.
 
 ## Layout
