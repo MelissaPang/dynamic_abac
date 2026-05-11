@@ -34,12 +34,19 @@ databricks bundle deploy -t dev
 databricks bundle run seed_patient_tables -t dev
 ```
 
+Or run deploy + job in one step from the repo root (requires ``databricks`` on your PATH):
+
+```bash
+python set_up.py --catalog YOUR_CATALOG --profile YOUR_CLI_PROFILE
+```
+
 After a successful run, open the **`verify_abac_notebook`** task run in the job UI to inspect **`verify_abac_policies`** outputs (counts and `EXCEPT` lists), or query tables directly, e.g. `` SELECT * FROM my_catalog.demo_dynamic_abac.patient_claims LIMIT 5 ``.
 
 ## Layout
 
 | Path | Purpose |
 |------|---------|
+| `set_up.py` | CLI wrapper: ``bundle deploy`` then ``bundle run seed_patient_tables`` with ``--catalog`` / ``--schema`` |
 | `databricks.yml` | Bundle metadata, variables, wheel artifact build |
 | `resources/seed_patient_tables.job.yml` | Serverless job running the `seed` console script |
 | `src/dynamic_abac_demo/` | Wheel package: `seed_tables.py` + `bootstrap_data/*.csv` |
