@@ -6,7 +6,7 @@ This project demonstrates **dynamic row-level security (RLS)** in Unity Catalog:
 
 For **each user**, the set of patients they are allowed to work with is modeled in **`staff_patient_crosswalk`**: each row ties a staff identity (for example `staff_email`) to a `patient_id`, with optional **`is_excluded`** to hide specific patients from that staff member even when a relationship exists. At query time, a scalar function **`check_patient_access`** evaluates each row’s **`patient_id`** against `CURRENT_USER()` and the crosswalk so excluded combinations drop out of the result.
 
-The same idea extends **across a whole database (catalog)**: you attach the same **ABAC row-filter policy pattern** on every patient-facing table that should honor that crosswalk (this demo uses **one policy per table**, principals **`All account users`** then **`account users`**, **existing** Unity Catalog **governed** tags—**`abac_tag_key`** + **`abac_tag_value`** (default **`true`**) on each `*_with_abac` table, and **`abac_tag_key2`** with optional **`abac_tag_key2_value`** on **`patient_id`** (empty = key-only + `has_tag` in `MATCH COLUMNS`), plus UDF **`check_patient_access`**). Most teams **reuse tags already defined** on the account rather than inventing new ones. At catalog or schema scale you repeat that pattern with shared tags and UDFs. This repo ships a **minimal schema** (`demo_dynamic_abac` by default) so you can deploy and validate the pattern end to end before rolling it out broadly.
+The same idea extends **across a whole database (catalog)**: you attach the same **ABAC row-filter policy pattern** on every patient-facing table (indicated by tag) that should honor that crosswalk, use tag to indicate the index for patient_ID, plus UDF **`check_patient_access`**). This repo ships a **minimal schema** (`demo_dynamic_abac` by default) so you can deploy and validate the pattern end to end before rolling it out broadly.
 
 ## Tables in this schema
 
@@ -58,7 +58,7 @@ python set_up.py --catalog <catalog> [--profile <profile name>] [--abac-tag-key 
 
 `--profile` is optional when your bundle `workspace.profile` or `DATABRICKS_CONFIG_PROFILE` resolves auth. Tag flags are forwarded as bundle vars (use **`--abac-tag-value ""`** for a key-only table tag if your tag allows it). If `python` is not available, use `python3` the same way.
 
-After a successful run, open the **`verify_abac_notebook`** task in the job UI to inspect **`verify_abac_policies`** outputs, or query tables directly, for example `SELECT * FROM <catalog>.demo_dynamic_abac.patient_claims LIMIT 5`.
+This run will create a job to create synthetic tables, apply tags, create UDF, and attach an ABAC policy. After a successful run, open the **`verify_abac_notebook`** task in the job UI to inspect **`verify_abac_policies`** outputs, or query tables directly, for example `SELECT * FROM <catalog>.demo_dynamic_abac.patient_claims LIMIT 5`.
 
 ## Layout
 
