@@ -1,4 +1,4 @@
-# Serverless Python wheel job: bundled CSVs -> Delta tables in {catalog}.{schema}.
+# Serverless job: seed Delta tables + ABAC row filters, then run proof notebook.
 
 resources:
   jobs:
@@ -15,6 +15,16 @@ resources:
               - "${var.catalog}"
               - "--schema"
               - "${var.schema}"
+          environment_key: default
+
+        - task_key: verify_abac_notebook
+          depends_on:
+            - task_key: seed_delta
+          notebook_task:
+            notebook_path: ../notebooks/verify_abac_policies.ipynb
+            base_parameters:
+              catalog: ${var.catalog}
+              schema: ${var.schema}
           environment_key: default
 
       environments:
