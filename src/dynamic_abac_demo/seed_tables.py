@@ -49,9 +49,26 @@ def _git_user_email_near(source_file: str) -> str | None:
     return None
 
 
+def _set_tag_sql_allow_duplicate(spark: SparkSession, sql: str) -> None:
+    """Run SET TAG …; UC raises if the same tag key is already assigned (idempotent re-seed)."""
+    try:
+        spark.sql(sql)
+    except Exception as e:
+        if "UC_DUPLICATE_TAG_ASSIGNMENT" in str(e):
+            return
+        raise
+
+
 def _apply_abac_row_filters(spark: SparkSession, catalog: str, schema: str) -> None:
-    """UC row filter: hide patient rows for current staff when crosswalk marks is_excluded = 1."""
+    """Hide patient rows when crosswalk marks is_excluded = 1 for the current user.
+
+    Tries Unity Catalog ABAC ``CREATE POLICY`` (row filter UDF + tag conditions) first.
+    If the metastore does not expose the tag keys for policy conditions (common on ad-hoc
+    tags), falls back to ``ALTER TABLE ... SET ROW FILTER``. See sql/abac_row_filter.sql.
+    """
     fq = lambda name: f"`{catalog}`.`{schema}`.`{name}`"
+    fq_schema = f"`{catalog}`.`{schema}`"
+    fq_fn = f"`{catalog}`.`{schema}`.`check_patient_access`"
 
     spark.sql(
         f"""
@@ -72,18 +89,46 @@ def _apply_abac_row_filters(spark: SparkSession, catalog: str, schema: str) -> N
         """
     )
 
-    spark.sql(
-        f"ALTER TABLE {fq('patient_demographics_with_abac')} "
-        f"SET ROW FILTER {fq('check_patient_access')} ON (patient_id)"
-    )
-    spark.sql(
-        f"ALTER TABLE {fq('patient_claims_with_abac')} "
-        f"SET ROW FILTER {fq('check_patient_access')} ON (patient_id)"
-    )
-    print(
-        f"Applied UC row filter {catalog}.{schema}.check_patient_access "
-        f"to patient_demographics_with_abac and patient_claims_with_abac"
-    )
+    abac_policy_sql = f"""
+        CREATE OR REPLACE POLICY patient_crosswalk_abac
+        ON SCHEMA {fq_schema}
+        COMMENT 'Hide patient rows when staff crosswalk marks is_excluded = 1 for current user and patient_id'
+        ROW FILTER {fq_fn}
+        TO `account users`
+        FOR TABLES
+        WHEN has_tag_value('dynamic_abac_table', 'true')
+        MATCH COLUMNS has_tag_value('dynamic_abac_table', 'true') AS pid
+        USING COLUMNS (pid)
+        """
+
+    try:
+        for tbl in ("patient_demographics_with_abac", "patient_claims_with_abac"):
+            _set_tag_sql_allow_duplicate(
+                spark, f"SET TAG ON TABLE {fq(tbl)} dynamic_abac_table = true"
+            )
+            _set_tag_sql_allow_duplicate(
+                spark,
+                f"SET TAG ON COLUMN {fq(tbl)}.patient_id dynamic_abac_table = true",
+            )
+        spark.sql(abac_policy_sql)
+    except Exception as e:
+        msg = str(e)
+        if "UC_INVALID_POLICY_CONDITION" not in msg and "Unknown tag policy key" not in msg:
+            raise
+        for tbl in ("patient_demographics_with_abac", "patient_claims_with_abac"):
+            spark.sql(
+                f"ALTER TABLE {fq(tbl)} SET ROW FILTER {fq_fn} ON (patient_id)"
+            )
+        print(
+            f"ABAC policy conditions not available for tag keys in this metastore; "
+            f"applied inline row filter {catalog}.{schema}.check_patient_access "
+            f"on patient_demographics_with_abac and patient_claims_with_abac."
+        )
+    else:
+        print(
+            f"Created ABAC row filter policy patient_crosswalk_abac on schema {catalog}.{schema} "
+            f"using UDF {catalog}.{schema}.check_patient_access"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
