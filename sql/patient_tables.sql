@@ -29,3 +29,11 @@ CREATE TABLE patient_claims (
     payer            TEXT,
     claim_status     TEXT
 );
+
+-- Staff–patient crosswalk (3 demo rows); patient_id values align with patient_demographics.
+CREATE TABLE staff_patient_crosswalk (
+    staff_id     TEXT NOT NULL,
+    patient_id   TEXT NOT NULL REFERENCES patient_demographics (patient_id),
+    is_excluded  SMALLINT NOT NULL CHECK (is_excluded IN (0, 1)),
+    staff_email  TEXT NOT NULL
+);
