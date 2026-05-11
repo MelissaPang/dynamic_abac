@@ -1,4 +1,4 @@
-# Serverless job: seed Delta tables + ABAC row filters, then run proof notebook.
+# Serverless job: seed Delta tables + ABAC row-filter policies (existing governed tags), then proof notebook.
 
 resources:
   jobs:
@@ -15,6 +15,14 @@ resources:
               - "${var.catalog}"
               - "--schema"
               - "${var.schema}"
+              - "--abac-tag-key"
+              - "${var.abac_tag_key}"
+              - "--abac-tag-value"
+              - "${var.abac_tag_value}"
+              - "--abac-tag-key2"
+              - "${var.abac_tag_key2}"
+              - "--abac-tag-key2-value"
+              - "${var.abac_tag_key2_value}"
           environment_key: default
 
         - task_key: verify_abac_notebook

@@ -20,10 +20,22 @@ artifacts:
 variables:
   catalog:
     description: Unity Catalog name where schema and Delta tables are created (catalog must already exist).
-    default: main
+    default: melissap
   schema:
     description: Schema within the catalog for patient demo tables.
     default: demo_dynamic_abac
+  abac_tag_key:
+    description: Governed tag key on *_with_abac tables (SET TAG ON TABLE; pair with abac_tag_value).
+    default: abac
+  abac_tag_value:
+    description: Tag value for abac_tag_key on tables (SQL string semantics). Empty string for key-only table tag.
+    default: "true"
+  abac_tag_key2:
+    description: Governed tag key on patient_id (SET TAG ON COLUMN; policy MATCH uses has_tag or has_tag_value).
+    default: abac_pii_types
+  abac_tag_key2_value:
+    description: Governed enum value for abac_tag_key2 on patient_id (empty/whitespace-only = key-only if UC allows). Example enums include ssn, address, executed_by, RUT.
+    default: ssn
 
 targets:
   dev:
@@ -31,5 +43,7 @@ targets:
     mode: development
     workspace:
       host: https://e2-demo-field-eng.cloud.databricks.com
+      # Avoids "multiple profiles matched" when running `databricks bundle` / `set_up.py` without --profile
+      profile: e2-demo-field-eng
   prod:
     mode: production

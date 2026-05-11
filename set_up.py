@@ -2,8 +2,9 @@
 """
 End-to-end setup: deploy the Databricks Asset Bundle, then run the ``seed_patient_tables`` job.
 
-That job (1) seeds Delta tables and crosswalk, creates an ABAC row-filter policy (UDF + governed tags) on ``*_with_abac`` tables,
-and (2) runs ``notebooks/verify_abac_policies.ipynb`` to validate visibility.
+That job (1) seeds Delta tables and crosswalk, attaches per-table ABAC row-filter policies
+(UDF + governed tags: ``abac_tag_key`` / ``abac_tag_value`` on tables, ``abac_tag_key2`` / optional ``abac_tag_key2_value`` on ``patient_id``) on ``*_with_abac`` tables, and
+(2) runs ``notebooks/verify_abac_policies.ipynb`` to validate visibility.
 
 Requires the ``databricks`` CLI on PATH and workspace auth (see README).
 
@@ -48,6 +49,11 @@ def _databricks_prefix(profile: str | None) -> list[str]:
     return cmd
 
 
+def _bundle_var_scalar(name: str, value: str) -> str:
+    """Bundle ``--var`` must not be empty/null for job wheel parameters (Terraform rejects nil). Whitespace-only → single space; ``seed_tables`` strips that to key-only."""
+    return f"{name}={value if value.strip() else ' '}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
@@ -75,12 +81,36 @@ def main() -> None:
         action="store_true",
         help="Only run the job; skip bundle deploy (after a successful deploy with same vars).",
     )
+    parser.add_argument(
+        "--abac-tag-key",
+        default="abac",
+        help="Bundle/job: governed tag key on *_with_abac tables (default matches databricks.yml ``abac_tag_key``).",
+    )
+    parser.add_argument(
+        "--abac-tag-value",
+        default="true",
+        help="Bundle/job: tag value for table tag key (default ``true``; empty for key-only). Matches ``abac_tag_value``.",
+    )
+    parser.add_argument(
+        "--abac-tag-key2",
+        default="abac_pii_types",
+        help="Bundle/job: governed tag key on patient_id (default matches databricks.yml ``abac_tag_key2``).",
+    )
+    parser.add_argument(
+        "--abac-tag-key2-value",
+        default="ssn",
+        help="Bundle/job: column tag value (governed enum for your tag; default ``ssn``). Empty = key-only if UC allows. Matches ``abac_tag_key2_value``.",
+    )
     args = parser.parse_args()
 
     root = _repo_root()
     dbx = _databricks_prefix(args.profile)
     var_catalog = f"catalog={args.catalog}"
     var_schema = f"schema={args.schema}"
+    var_abac_key = f"abac_tag_key={args.abac_tag_key}"
+    var_abac_val = _bundle_var_scalar("abac_tag_value", args.abac_tag_value)
+    var_abac_key2 = f"abac_tag_key2={args.abac_tag_key2}"
+    var_abac_key2_val = _bundle_var_scalar("abac_tag_key2_value", args.abac_tag_key2_value)
 
     if not args.skip_deploy:
         deploy = [
@@ -93,6 +123,14 @@ def main() -> None:
             var_catalog,
             "--var",
             var_schema,
+            "--var",
+            var_abac_key,
+            "--var",
+            var_abac_val,
+            "--var",
+            var_abac_key2,
+            "--var",
+            var_abac_key2_val,
         ]
         _run(deploy, cwd=root)
 
@@ -107,6 +145,14 @@ def main() -> None:
         var_catalog,
         "--var",
         var_schema,
+        "--var",
+        var_abac_key,
+        "--var",
+        var_abac_val,
+        "--var",
+        var_abac_key2,
+        "--var",
+        var_abac_key2_val,
     ]
     _run(run_job, cwd=root)
 
